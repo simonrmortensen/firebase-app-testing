@@ -20,7 +20,9 @@ Requests are recognised by what they contain, not by their path, so a renamed en
 
 The Mac and the iPhone must be on the same Wi-Fi network, and the network must allow devices to talk to each other (guest networks often don't).
 
-Events appear when the app **uploads a batch**, not the moment they fire. Sending the app to the background usually triggers an upload; if nothing shows, keep it in the background for a while.
+Events appear when the app **uploads a batch**, not the moment they fire, and one batch can hold dozens of events. The first upload can take a few minutes: use the app, then send it to the background and wait. Each batch is announced with a `-- host/path received HH:MM:SS: N events --` line, and every event keeps the time it actually fired.
+
+This is verified on a real iPhone with the Firebase iOS SDK: uploads go to `region1.app-analytics-services.com`, are decrypted and decoded as long as the certificate is trusted (step 5 below).
 
 ## Set up the iPhone (once)
 
@@ -63,6 +65,7 @@ On the Mac:
 
 | Symptom | Likely cause |
 |---|---|
+| Nothing prints and `~/Library/Logs/event-proxy/requests.log` says `TLS handshake with the device failed` | The certificate is installed but not **trusted**: switch it on under Settings > General > About > Certificate Trust Settings (step 5). Then force-quit the app and use it again |
 | `mitm.it` says traffic is not going through mitmproxy | Proxy not set on the phone, `ios-testing` not running, different network, or you typed `mitm.it` without `http://` |
 | Phone has no internet | The Wi-Fi proxy is still on but `ios-testing` is not running. Turn it off or start it |
 | No events, but the app works | Not uploaded yet (background the app and wait), or the certificate is installed but not trusted (step 5), or the app sends events to a host that is not decrypted. Check `~/Library/Logs/event-proxy/hosts.log` for the host and add it with `--domain` |
