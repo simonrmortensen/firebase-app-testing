@@ -68,6 +68,7 @@ On the Mac:
 | No events, but the app works | Not uploaded yet (background the app and wait), or the certificate is installed but not trusted (step 5), or the app sends events to a host that is not decrypted. Check `~/Library/Logs/event-proxy/hosts.log` for the host and add it with `--domain` |
 | `not an event request: ...` (with `--debug`) | A decrypted host received a request that does not look like an event, e.g. a health check. If it should be an event, the format is not supported yet; see `AGENTS.md` |
 | `could not decode upload` | The Firebase decoder does not match the upload format. The raw body is kept in `~/Library/Logs/event-proxy/raw/`; open an issue with a sample or see `AGENTS.md` |
+| The app's backend blocks or rejects requests while the proxy runs | The phone's traffic now leaves the network from the Mac. If the Mac is on a VPN, the backend sees the VPN's IP address instead of your usual one (check `netstat -rn -f inet \| grep default` for a `utun` route). Disconnect the VPN on the Mac during the session; the phone reaches the Mac over local Wi-Fi, so it keeps working |
 | One feature of the app fails while the proxy runs | The app pins certificates for a host that is decrypted, for example its own `data.` or `track.` backend. Firebase uploads are not usually pinned. Everything not matching the lists above is not decrypted, so the pinned host is the one to look for in `~/Library/Logs/event-proxy/hosts.log` |
 
 ## Why there is a relay
