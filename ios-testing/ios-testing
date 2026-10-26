@@ -14,7 +14,7 @@
 #                                        recognised as an event, to check what the app really sends
 #   PORT=9090 ios-testing                listen on a different port (default 8080; PORT+1 is used
 #                                        internally by mitmproxy)
-# Every host the phone connects to is logged to ~/Library/Logs/event-proxy/hosts.log.
+# Every host the phone connects to is logged to ~/Library/Logs/event-proxy/hosts.log (and requests.log for what happened to each request).
 #
 # Defaults can be kept in ${XDG_CONFIG_HOME:-~/.config}/ios-testing/config, a shell file with
 #   DEFAULT_DOMAINS="sgtm.example.com other.example.org"

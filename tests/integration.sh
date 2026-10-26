@@ -5,7 +5,7 @@
 cd "$(dirname "$0")/.." || exit 1
 TMP=$(mktemp -d)
 PORT=18099
-export EVENT_PROXY_DOMAINS="custom.test" EVENT_PROXY_DEBUG=1 EVENT_PROXY_SAVE="$TMP/saved.log" EVENT_PROXY_RAW_DIR="$TMP/raw"
+export EVENT_PROXY_DOMAINS="custom.test" EVENT_PROXY_DEBUG=1 EVENT_PROXY_SAVE="$TMP/saved.log" EVENT_PROXY_LOG_DIR="$TMP/logs"
 
 python3 tests/make_upload.py >"$TMP/upload.gz"
 mitmdump --mode reverse:http://127.0.0.1:9 --listen-port "$PORT" --set flow_detail=0 \
@@ -52,6 +52,8 @@ check "unrecognised request is reported"      'not an event request: GET sgtm.ex
 check "undecodable firebase body is kept"     'could not decode upload' 1
 check "user property printed once"            'user_property  non_personalized_ads = 1' 1
 check "no redundant note after a decode error" 'not an event request: POST app-measurement.com' 0
+reqs=$(grep -c ': ' "$TMP/logs/requests.log")
+[ "$reqs" -eq 7 ] && echo "ok    requests.log has $reqs lines" || { echo "FAIL  requests.log has $reqs lines"; fail=1; }
 saved=$(grep -cE '\[[a-z]+\]$' "$TMP/saved.log")
 [ "$saved" -ge 6 ] && echo "ok    saved file has $saved events" || { echo "FAIL  saved file has $saved events"; fail=1; }
 [ "$fail" = 0 ] && echo "all integration checks passed" || { echo "--- output"; echo "$OUT"; }

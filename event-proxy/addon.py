@@ -11,8 +11,9 @@ Environment:
                         its subdomains; a `*` makes it a glob over the whole host name)
   EVENT_PROXY_SAVE      also append a plain-text copy (no colour codes) to this file
   EVENT_PROXY_DEBUG=1   also say when a request to a decrypted host was not recognised
-  EVENT_PROXY_RAW_DIR   where undecodable Firebase uploads are kept
-                        (default ~/Library/Logs/event-proxy/raw)
+  EVENT_PROXY_LOG_DIR   where the logs go (default ~/Library/Logs/event-proxy): hosts.log (every
+                        host connected to), requests.log (every request to a decrypted host and
+                        what became of it, plus failed handshakes) and raw/ (undecodable uploads)
 """
 import os
 import re
@@ -26,9 +27,10 @@ import hosts
 
 ANSI = re.compile(r"\033\[[0-9;]*m")
 COLOR = sys.stdout.isatty()
-LOG_DIR = os.path.expanduser("~/Library/Logs/event-proxy")
-HOSTS_LOG = os.path.join(LOG_DIR, "hosts.log")  # every host connected to, for debugging
-RAW_DIR = os.environ.get("EVENT_PROXY_RAW_DIR") or os.path.join(LOG_DIR, "raw")
+LOG_DIR = os.environ.get("EVENT_PROXY_LOG_DIR") or os.path.expanduser("~/Library/Logs/event-proxy")
+HOSTS_LOG = os.path.join(LOG_DIR, "hosts.log")
+REQUESTS_LOG = os.path.join(LOG_DIR, "requests.log")
+RAW_DIR = os.path.join(LOG_DIR, "raw")
 
 
 def c(code, text):
@@ -80,11 +82,22 @@ class EventProxy:
             self.save.write(ANSI.sub("", text) + "\n")
             self.save.flush()
 
-    def server_connect(self, data):
+    def log(self, path, line):
         os.makedirs(LOG_DIR, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now():%H:%M:%S}  {line}\n")
+
+    def server_connect(self, data):
         host, port = data.server.address
-        with open(HOSTS_LOG, "a", encoding="utf-8") as fh:
-            fh.write(f"{datetime.now():%H:%M:%S}  {host}:{port}\n")
+        self.log(HOSTS_LOG, f"{host}:{port}")
+
+    def tls_failed_client(self, data):
+        host = data.context.client.sni or (data.context.server.address or ("?",))[0]
+        error = data.conn.error or "unknown error"
+        self.log(REQUESTS_LOG, f"TLS handshake with the device failed for {host}: {error}")
+        if hosts.matches(host, self.domains):
+            self.out(c("31", f"event-proxy: the device rejected the certificate for {host} ({error}); "
+                             "is the mitmproxy certificate trusted? (Settings > General > About > Certificate Trust Settings)"))
 
     def keep_raw(self, body):
         os.makedirs(RAW_DIR, exist_ok=True)
@@ -135,6 +148,11 @@ class EventProxy:
         if not hosts.matches(host, self.domains):
             return
         result = self.decode(flow)
+        size = len(flow.request.raw_content or b"")
+        outcome = ("undecodable" if result is False else "not an event" if result is None
+                   else f"{len(result[0])} events")
+        self.log(REQUESTS_LOG, f"{flow.request.method} {host}{flow.request.path.split('?')[0]} "
+                               f"{size}B type={flow.request.headers.get('content-type', '-')}: {outcome}")
         if result is False:
             return
         if result is None:
