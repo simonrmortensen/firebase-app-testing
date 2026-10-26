@@ -37,17 +37,20 @@ The certificate is generated on the Mac the first time `ios-testing` runs, in `~
 
 ## Each test session
 
-1. Run `ios-testing` on the Mac (add `--save-events` to keep a log).
-2. Make sure the phone's Wi-Fi proxy is still set to Manual.
-3. Open the app, use it, then send it to the background.
-4. Press Ctrl-C on the Mac when done.
+1. On the Mac, disconnect any VPN (the app's traffic leaves through the Mac, so the backend would see the VPN's IP address), then run `ios-testing` (add `--save-events` to keep a log).
+2. On the phone, set the Wi-Fi proxy to Manual again with the IP and port `ios-testing` prints. The Mac's IP address can change between sessions, so do not reuse an old one.
+3. If you switched the certificate trust off after the last session, switch it on again (Settings > General > About > Certificate Trust Settings).
+4. Open the app, use it, then send it to the background and wait for the upload.
 
-## Turn it off
+## After a session
 
-Do this after every session, or the phone has no internet whenever `ios-testing` is not running.
+Do this every time, or the phone has no internet whenever `ios-testing` is not running.
 
-- **Disable the proxy**: Settings > Wi-Fi > (i) next to your network > Configure Proxy > **Off**.
-- The certificate can stay installed between sessions; it does nothing while the proxy is off. If you do leave it, remember it lets anyone holding the Mac's `~/.mitmproxy/` key read your HTTPS traffic through a proxy, so prefer to remove it when you are done for a while.
+1. **Phone, disable the proxy**: Settings > Wi-Fi > (i) next to your network > Configure Proxy > **Off** > Save.
+2. **Phone, switch the certificate trust off** (recommended): Settings > General > About > Certificate Trust Settings > turn the mitmproxy switch off. The profile stays installed, so next time you only turn the switch on again. While the switch is on, anyone who gets the key in the Mac's `~/.mitmproxy/` folder could decrypt traffic that passes through a proxy they control; with it off, the certificate is not trusted for anything.
+3. **Mac**: stop `ios-testing` with Ctrl-C and reconnect your VPN.
+
+To remove the certificate completely instead, see Uninstall below; you would then install it again before the next session.
 
 ## Uninstall
 
