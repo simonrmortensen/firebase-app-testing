@@ -1,12 +1,22 @@
 # ios-testing
 
-Prints the Firebase Analytics events an app on a **physical iPhone** sends, by routing the phone's Wi-Fi traffic through a proxy on your Mac. Only Firebase's upload hosts are decrypted; everything else passes through untouched.
+Prints the analytics events an app on a **physical iPhone** sends, by routing the phone's Wi-Fi traffic through a proxy on your Mac. Only analytics hosts are decrypted; everything else passes through untouched.
 
 ```
-ios-testing                      # print events as the app uploads them
-ios-testing --save-events        # also save them to ./ios-events-<timestamp>.log
-ios-testing --debug              # also list every host the phone connects to
+ios-testing                                # print events as the app uploads them
+ios-testing --save-events                  # also save them to ./ios-events-<timestamp>.log
+ios-testing --domain sgtm.example.com      # also decrypt this domain (repeatable)
+ios-testing --debug                        # also report requests to decrypted hosts that are not events
 ```
+
+**What is monitored.** Firebase uploads (protobuf), GA4 `/g/collect` requests and Measurement Protocol JSON, on these hosts:
+- Firebase and Google Analytics hosts (`app-measurement.com`, `app-analytics-services.com`, `google-analytics.com`, `analytics.google.com`).
+- Any host with a label starting with `googleanalytics`, `sgtm`, `sst`, `gtmss`, `data` or `track`, for example `sgtm.example.com` or `track1.example.com`. These are the usual names of server-side tagging endpoints.
+- Your own domains with `--domain`. `example.com` covers the domain and all its subdomains; a `*` makes it a pattern over the whole host name, e.g. `--domain 'collect*.example.*'`. Put permanent ones in `~/.config/ios-testing/config`: `DEFAULT_DOMAINS="sgtm.example.com other.example.org"`.
+
+Not sure which host your app sends events to? Use the app for a minute and read `~/Library/Logs/event-proxy/hosts.log`, which lists every host the phone connected to, then pass the right one with `--domain`.
+
+Requests are recognised by what they contain, not by their path, so a renamed endpoint still works as long as it is on a decrypted host.
 
 The Mac and the iPhone must be on the same Wi-Fi network, and the network must allow devices to talk to each other (guest networks often don't).
 
@@ -47,7 +57,7 @@ On the Mac:
 - Remove the commands: `./install.sh --uninstall` in this repo.
 - Remove mitmproxy: `uv tool uninstall mitmproxy`.
 - Delete the certificate and key: `rm -r ~/.mitmproxy`. A new certificate is generated if you ever set it up again, and the phone must then install it again.
-- Optional: delete the logs in `~/Library/Logs/ios-testing/`.
+- Optional: delete the logs in `~/Library/Logs/event-proxy/`.
 
 ## Troubleshooting
 
@@ -55,9 +65,10 @@ On the Mac:
 |---|---|
 | `mitm.it` says traffic is not going through mitmproxy | Proxy not set on the phone, `ios-testing` not running, different network, or you typed `mitm.it` without `http://` |
 | Phone has no internet | The Wi-Fi proxy is still on but `ios-testing` is not running. Turn it off or start it |
-| No events, but the app works | Not uploaded yet (background the app and wait), or the certificate is installed but not trusted (step 5). Run `ios-testing --debug` and look for `app-analytics-services.com` or `app-measurement.com` |
-| `could not decode upload` | The decoder does not match the upload format. The raw body is kept in `~/Library/Logs/ios-testing/raw/`; open an issue with a sample or see `AGENTS.md` |
-| App refuses to load anything | The app pins certificates. Firebase uploads are not usually pinned, and other hosts are not decrypted, so this should not happen with this tool |
+| No events, but the app works | Not uploaded yet (background the app and wait), or the certificate is installed but not trusted (step 5), or the app sends events to a host that is not decrypted. Check `~/Library/Logs/event-proxy/hosts.log` for the host and add it with `--domain` |
+| `not an event request: ...` (with `--debug`) | A decrypted host received a request that does not look like an event, e.g. a health check. If it should be an event, the format is not supported yet; see `AGENTS.md` |
+| `could not decode upload` | The Firebase decoder does not match the upload format. The raw body is kept in `~/Library/Logs/event-proxy/raw/`; open an issue with a sample or see `AGENTS.md` |
+| One feature of the app fails while the proxy runs | The app pins certificates for a host that is decrypted, for example its own `data.` or `track.` backend. Firebase uploads are not usually pinned. Everything not matching the lists above is not decrypted, so the pinned host is the one to look for in `~/Library/Logs/event-proxy/hosts.log` |
 
 ## Why there is a relay
 

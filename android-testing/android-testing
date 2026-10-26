@@ -10,6 +10,16 @@
 #   android-testing --save-events [FILE]        also save the events to a file (plain text,
 #                                               default ./android-events-<timestamp>.log);
 #                                               the file is complete once you close the emulator
+#   android-testing --proxy                    also route the emulator through a local proxy that prints
+#                                               events the app sends over HTTP: GA4 /g/collect and
+#                                               Measurement Protocol calls, e.g. to a server-side GTM
+#                                               endpoint. Logcat cannot see those. See ios-testing/
+#                                               README.md for the certificate; the app must trust it
+#   android-testing --domain example.com        in proxy mode also decrypt this domain and its
+#                                               subdomains (repeatable; implies --proxy). A `*` makes it
+#                                               a glob over the whole host name. The proxy already
+#                                               covers Firebase, Google Analytics and hosts named
+#                                               sgtm / sst / gtmss / data / track
 #   DEBUG_APP=com.example.app android-testing   flag this app for DebugView (default: none)
 #   DEBUG_APP= android-testing                  skip DebugView
 #   EVENTS=0 android-testing                    don't print events (emulator output stays here)
@@ -18,6 +28,7 @@
 # Defaults can be kept in ${XDG_CONFIG_HOME:-~/.config}/android-testing/config, a shell file with
 #   DEFAULT_DEBUG_APP=com.example.app
 #   DEFAULT_AVD=Other_AVD
+#   DEFAULT_DOMAINS="sgtm.example.com other.example.org"
 # Environment variables win over it. ANDROID_HOME defaults to the Homebrew
 # android-commandlinetools install.
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/android-testing/config"
@@ -28,8 +39,15 @@ AVD="${AVD:-${DEFAULT_AVD:-Pixel_8_API_35}}"
 DEBUG_APP="${DEBUG_APP-$DEFAULT_DEBUG_APP}"
 EVENTS="${EVENTS-1}"
 EMULATOR_LOG="$HOME/Library/Logs/android-testing-emulator.log"
+DOMAINS="$DEFAULT_DOMAINS"
+PROXY_PORT="${PROXY_PORT-8085}"
+USE_PROXY=0
+# Helper files sit next to this script; it is normally run through a symlink from ~/.local/bin.
+SELF=$0
+[ -L "$SELF" ] && SELF=$(readlink "$SELF")
+PROXY_DIR="$(cd "$(dirname "$SELF")" && pwd)/../event-proxy"
 
-# Pull out our own --save-events flag; everything else goes to the emulator.
+# Pull out our own flags; everything else goes to the emulator.
 SAVE_FILE=""
 n=$#
 while [ "$n" -gt 0 ]; do
@@ -39,6 +57,11 @@ while [ "$n" -gt 0 ]; do
     --save-events)
       if [ "$n" -gt 0 ] && [ "${1#-}" = "$1" ]; then SAVE_FILE=$1; shift; n=$((n - 1))
       else SAVE_FILE="./android-events-$(date +%Y%m%d-%H%M%S).log"; fi ;;
+    --proxy) USE_PROXY=1 ;;
+    --domain=*) DOMAINS="$DOMAINS ${arg#*=}"; USE_PROXY=1 ;;
+    --domain)
+      if [ "$n" -gt 0 ]; then DOMAINS="$DOMAINS $1"; USE_PROXY=1; shift; n=$((n - 1))
+      else echo "android-testing: --domain needs a value" >&2; exit 2; fi ;;
     *) set -- "$@" "$arg" ;;
   esac
 done
@@ -61,6 +84,13 @@ setup_device() {
     echo "android-testing: Firebase DebugView enabled for $DEBUG_APP"
   fi
 
+  # Proxy mode: the emulator trusts nothing new by itself, so leave the certificate where it can be
+  # installed (Settings > Security > Encryption & credentials > Install a certificate > CA certificate).
+  if [ "$USE_PROXY" = 1 ] && [ -f "$HOME/.mitmproxy/mitmproxy-ca-cert.cer" ]; then
+    "$ADB" push "$HOME/.mitmproxy/mitmproxy-ca-cert.cer" /sdcard/Download/ >/dev/null 2>&1 &&
+      echo "android-testing: proxy certificate copied to the emulator's Downloads folder (install it as a CA certificate, once)"
+  fi
+
   # Event printing: the SDK only logs events when its log tags are set to VERBOSE.
   if [ "$EVENTS" != 0 ]; then
     "$ADB" shell setprop log.tag.FA VERBOSE
@@ -72,10 +102,22 @@ setup_device() {
   fi
 }
 
+PROXY_PID=""
+if [ "$USE_PROXY" = 1 ]; then
+  if ! command -v mitmdump >/dev/null 2>&1; then
+    echo "android-testing: --proxy needs mitmproxy; run install.sh from the repo" >&2; exit 1
+  fi
+  [ -n "$SAVE_FILE" ] && export EVENT_PROXY_SAVE="$SAVE_FILE"
+  EVENT_PROXY_DOMAINS="$DOMAINS" mitmdump --listen-host 127.0.0.1 --listen-port "$PROXY_PORT" \
+    --set flow_detail=0 --set termlog_verbosity=warn -s "$PROXY_DIR/addon.py" &
+  PROXY_PID=$!
+  set -- -http-proxy "http://127.0.0.1:$PROXY_PORT" "$@"
+fi
+
 setup_device &
 SETUP_PID=$!
-# Stop the background job and its logcat/formatter children when the emulator exits.
-trap 'pkill -P "$SETUP_PID" 2>/dev/null; kill "$SETUP_PID" 2>/dev/null' EXIT
+# Stop the background jobs (logcat/formatter children, proxy) when the emulator exits.
+trap 'pkill -P "$SETUP_PID" 2>/dev/null; kill "$SETUP_PID" $PROXY_PID 2>/dev/null' EXIT
 
 if [ "$EVENTS" != 0 ]; then
   "$ANDROID_HOME/emulator/emulator" -avd "$AVD" "$@" >"$EMULATOR_LOG" 2>&1
