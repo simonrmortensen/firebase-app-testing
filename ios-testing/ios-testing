@@ -1,0 +1,76 @@
+#!/bin/sh
+# Print the Firebase Analytics events a physical iPhone sends, via a Wi-Fi proxy on this Mac.
+# Counterpart of `android-testing`. Only Firebase's upload endpoints (app-measurement.com and
+# app-analytics-services.com) are decrypted; all other traffic from the phone passes through untouched.
+#
+#   ios-testing                          start the proxy and print events as the app uploads them
+#   ios-testing --save-events [FILE]     also save the events to a file (plain text,
+#                                        default ./ios-events-<timestamp>.log)
+#   ios-testing --debug                  also list every host the phone connects to, to check whether
+#                                        the app talks to Firebase at all
+#   PORT=9090 ios-testing                listen on a different port (default 8080; PORT+1 is used
+#                                        internally by mitmproxy)
+#
+# One-time phone setup (full instructions in README.md next to this script):
+#   1. iPhone on the same Wi-Fi as this Mac: Settings > Wi-Fi > (i) > Configure Proxy > Manual,
+#      Server = the IP shown below, Port = 8080, Authentication off.
+#   2. In Safari open http://mitm.it, download the Apple profile, install it
+#      (Settings > General > VPN & Device Management).
+#   3. Settings > General > About > Certificate Trust Settings: switch on the mitmproxy certificate.
+#   Turn the manual proxy off again when you are done, or the phone loses internet without this running.
+#
+# Events arrive when the app uploads a batch, not the moment they fire; backgrounding the app
+# usually makes it upload.
+PORT="${PORT-8080}"
+# Helper files sit next to this script; it is normally run through a symlink from ~/.local/bin.
+SELF=$0
+[ -L "$SELF" ] && SELF=$(readlink "$SELF")
+DIR=$(cd "$(dirname "$SELF")" && pwd)
+ADDON="$DIR/firebase_events.py"
+
+SAVE_FILE=""
+LOG_LEVEL=warn
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --save-events=*) SAVE_FILE=${1#*=} ;;
+    --save-events)
+      if [ $# -gt 1 ] && [ "${2#-}" = "$2" ]; then SAVE_FILE=$2; shift
+      else SAVE_FILE="./ios-events-$(date +%Y%m%d-%H%M%S).log"; fi ;;
+    --debug) LOG_LEVEL=info ;;
+    *) echo "ios-testing: unknown argument $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
+echo "ios-testing: set the iPhone's Wi-Fi proxy to Manual, server ${IP:-<the IP of this Mac>}, port $PORT"
+echo "ios-testing: first time? install and trust the certificate: http://mitm.it in Safari, see $DIR/README.md"
+if [ -n "$SAVE_FILE" ]; then
+  export IOS_TESTING_SAVE="$SAVE_FILE"
+  echo "ios-testing: saving events to $SAVE_FILE"
+fi
+echo "ios-testing: waiting for Firebase uploads (Ctrl-C to stop)"
+
+# The firewall on this Mac blocks incoming connections to mitmproxy's Python but allows the system
+# one, so a small relay run by /usr/bin/python3 takes the phone's connections on $PORT and hands
+# them to mitmproxy, which listens on loopback only.
+/usr/bin/python3 "$DIR/relay.py" "$PORT" "$((PORT + 1))" &
+RELAY_PID=$!
+trap 'kill "$RELAY_PID" 2>/dev/null' EXIT
+
+mitmdump --listen-host 127.0.0.1 --listen-port "$((PORT + 1))" \
+  --allow-hosts '^(.+\.)?(app-measurement|app-analytics-services)\.com:443$' \
+  --set flow_detail=0 --set termlog_verbosity="$LOG_LEVEL" \
+  -s "$ADDON"
+status=$?
+
+if [ -n "$SAVE_FILE" ]; then
+  count=$(grep -cE '\[[a-z]+\]$' "$SAVE_FILE" 2>/dev/null)
+  if [ "${count:-0}" -gt 0 ]; then
+    echo "ios-testing: saved $count events to $SAVE_FILE"
+  else
+    rm -f "$SAVE_FILE"  # header only, no events
+    echo "ios-testing: no events were captured, nothing saved"
+  fi
+fi
+exit $status

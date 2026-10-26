@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Pretty-print Firebase Analytics events from `adb logcat -v threadtime` on stdin.
+
+Used by `android-testing`; can also be run by hand:
+    adb logcat -T 1 -v threadtime FA:V FA-SVC:V '*:S' | android-testing-events [--save FILE]
+
+--save FILE appends a plain-text copy (no colour codes) of everything printed.
+"""
+import re
+import signal
+import sys
+from datetime import datetime
+
+LOG_LINE = re.compile(r"^\d\d-\d\d (\d\d:\d\d:\d\d\.\d+)\s+\d+\s+\d+\s+\w\s+(FA|FA-SVC)\s*:\s(.*)$")
+EVENT = re.compile(r"^Logging event[^:]*: origin=(\w+),name=(.*?),params=(.*)$")
+USER_PROP = re.compile(r"^Setting user property[^:]*: (.+?), (.*)$")
+KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\([A-Za-z_]+\))?=")  # key=, optionally key(_x)=
+
+ANSI = re.compile(r"\033\[[0-9;]*m")
+COLOR = sys.stdout.isatty()
+SAVE = None  # plain-text copy of everything printed, set by --save
+
+
+def c(code, text):
+    # Always colour; `out` strips the codes for non-terminal output and the saved file.
+    return f"\033[{code}m{text}\033[0m"
+
+
+def out(text):
+    print(text if COLOR else ANSI.sub("", text), flush=True)
+    if SAVE:
+        SAVE.write(ANSI.sub("", text) + "\n")
+        SAVE.flush()  # events are on disk as they arrive, even if the session is killed
+
+
+def clean(name):
+    """Drop Firebase's internal short-name suffix: ga_screen(_sn) -> ga_screen."""
+    return re.sub(r"\([^)]*\)$", "", name)
+
+
+def split_top(s, keyed):
+    """Split on ', ' at bracket depth 0. If keyed, only where a `key=` follows."""
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(s):
+        ch = s[i]
+        if ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+        elif depth == 0 and s.startswith(", ", i) and (not keyed or KEY.match(s, i + 2)):
+            parts.append(s[start:i])
+            start, i = i + 2, i + 1
+        i += 1
+    parts.append(s[start:])
+    return [p for p in parts if p != ""]
+
+
+def parse_value(v):
+    if v.startswith("Bundle[{") and v.endswith("}]"):
+        return parse_bundle(v)
+    if v.startswith("[") and v.endswith("]"):
+        return [parse_value(x) for x in split_top(v[1:-1], keyed=False)]
+    return v
+
+
+def parse_bundle(s):
+    inner = s[len("Bundle[{"):-len("}]")]
+    out = {}
+    for pair in split_top(inner, keyed=True):
+        key, _, val = pair.partition("=")
+        out[clean(key)] = parse_value(val)
+    return out
+
+
+def fmt_item(item):
+    if isinstance(item, dict):
+        return "  ".join(f"{k}={v}" for k, v in item.items())
+    return str(item)
+
+
+def render_params(params):
+    width = max((len(k) for k in params), default=0)
+    lines = []
+    for k, v in params.items():
+        if isinstance(v, list):
+            lines.append(f"    {c('1', k.ljust(width))}  [{len(v)}]")
+            lines += [f"    {' ' * width}    - {fmt_item(x)}" for x in v]
+        elif isinstance(v, dict):
+            lines.append(f"    {c('1', k.ljust(width))}  {fmt_item(v)}")
+        else:
+            lines.append(f"    {c('1', k.ljust(width))}  {v}")
+    return lines
+
+
+def handle(ts, msg):
+    m = EVENT.match(msg)
+    if m:
+        origin, name, raw = m.groups()
+        name = clean(name)
+        try:
+            params = parse_bundle(raw)
+            body = render_params(params)
+        except Exception:
+            body = [f"    (could not parse) {raw}"]
+        # Auto-collected events are dimmed so the app's own events stand out.
+        title = c("2", f"{ts}  {name}  [{origin}]") if origin == "auto" else c("1;36", f"{ts}  {name}") + c("2", f"  [{origin}]")
+        out("\n".join([title] + body))
+        return
+    m = USER_PROP.match(msg)
+    if m:
+        name, val = m.groups()
+        out(c("33", f"{ts}  user_property  {clean(name)} = {val}"))
+
+
+def main():
+    global SAVE
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    if len(sys.argv) == 3 and sys.argv[1] == "--save":
+        SAVE = open(sys.argv[2], "a", encoding="utf-8")
+        SAVE.write(f"# Firebase Analytics events, started {datetime.now():%Y-%m-%d %H:%M:%S}\n\n")
+    last = None
+    try:
+        for line in sys.stdin:
+            m = LOG_LINE.match(line.rstrip("\n"))
+            if not m:
+                continue
+            ts, _tag, msg = m.groups()
+            if (ts, msg) == last:  # same line from two tags/buffers
+                continue
+            last = (ts, msg)
+            handle(ts, msg)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,98 @@
+#!/bin/sh
+# Start the Android test emulator (Pixel 8, Android 35, Google Play).
+# Extra arguments are passed through to the emulator, e.g. `android-testing -no-audio`.
+#
+# Once the device has booted this also:
+#  - flags DEBUG_APP for Firebase DebugView (only one app at a time)
+#  - prints Firebase Analytics events in this terminal as the SDK logs them
+# Emulator output goes to $EMULATOR_LOG while events are shown, to keep the terminal readable.
+#
+#   android-testing --save-events [FILE]        also save the events to a file (plain text,
+#                                               default ./android-events-<timestamp>.log);
+#                                               the file is complete once you close the emulator
+#   DEBUG_APP=com.example.app android-testing   flag this app for DebugView (default: none)
+#   DEBUG_APP= android-testing                  skip DebugView
+#   EVENTS=0 android-testing                    don't print events (emulator output stays here)
+#   AVD=Other_AVD android-testing               use another emulator (default Pixel_8_API_35)
+#
+# Defaults can be kept in ${XDG_CONFIG_HOME:-~/.config}/android-testing/config, a shell file with
+#   DEFAULT_DEBUG_APP=com.example.app
+#   DEFAULT_AVD=Other_AVD
+# Environment variables win over it. ANDROID_HOME defaults to the Homebrew
+# android-commandlinetools install.
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/android-testing/config"
+[ -f "$CONFIG" ] && . "$CONFIG"
+ANDROID_HOME="${ANDROID_HOME:-$(brew --prefix)/share/android-commandlinetools}"
+ADB="$ANDROID_HOME/platform-tools/adb"
+AVD="${AVD:-${DEFAULT_AVD:-Pixel_8_API_35}}"
+DEBUG_APP="${DEBUG_APP-$DEFAULT_DEBUG_APP}"
+EVENTS="${EVENTS-1}"
+EMULATOR_LOG="$HOME/Library/Logs/android-testing-emulator.log"
+
+# Pull out our own --save-events flag; everything else goes to the emulator.
+SAVE_FILE=""
+n=$#
+while [ "$n" -gt 0 ]; do
+  arg=$1; shift; n=$((n - 1))
+  case "$arg" in
+    --save-events=*) SAVE_FILE=${arg#*=} ;;
+    --save-events)
+      if [ "$n" -gt 0 ] && [ "${1#-}" = "$1" ]; then SAVE_FILE=$1; shift; n=$((n - 1))
+      else SAVE_FILE="./android-events-$(date +%Y%m%d-%H%M%S).log"; fi ;;
+    *) set -- "$@" "$arg" ;;
+  esac
+done
+[ -n "$SAVE_FILE" ] && EVENTS=1
+
+setup_device() {
+  "$ADB" wait-for-device
+  # Wait up to ~5 minutes for the boot to finish; properties can't be set earlier.
+  i=0
+  while [ "$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != 1 ]; do
+    i=$((i + 1)); [ "$i" -gt 150 ] && return 1
+    sleep 2
+  done
+
+  # Firebase DebugView. Only takes effect when the app starts, so restart it if we changed anything.
+  if [ -n "$DEBUG_APP" ] &&
+     [ "$("$ADB" shell getprop debug.firebase.analytics.app | tr -d '\r')" != "$DEBUG_APP" ]; then
+    "$ADB" shell setprop debug.firebase.analytics.app "$DEBUG_APP"
+    "$ADB" shell am force-stop "$DEBUG_APP"
+    echo "android-testing: Firebase DebugView enabled for $DEBUG_APP"
+  fi
+
+  # Event printing: the SDK only logs events when its log tags are set to VERBOSE.
+  if [ "$EVENTS" != 0 ]; then
+    "$ADB" shell setprop log.tag.FA VERBOSE
+    "$ADB" shell setprop log.tag.FA-SVC VERBOSE
+    echo "android-testing: printing Firebase events below (emulator log: $EMULATOR_LOG)"
+    [ -n "$SAVE_FILE" ] && echo "android-testing: saving events to $SAVE_FILE"
+    "$ADB" logcat -T 1 -v threadtime 'FA:V' 'FA-SVC:V' '*:S' |
+      if [ -n "$SAVE_FILE" ]; then android-testing-events --save "$SAVE_FILE"; else android-testing-events; fi
+  fi
+}
+
+setup_device &
+SETUP_PID=$!
+# Stop the background job and its logcat/formatter children when the emulator exits.
+trap 'pkill -P "$SETUP_PID" 2>/dev/null; kill "$SETUP_PID" 2>/dev/null' EXIT
+
+if [ "$EVENTS" != 0 ]; then
+  "$ANDROID_HOME/emulator/emulator" -avd "$AVD" "$@" >"$EMULATOR_LOG" 2>&1
+else
+  "$ANDROID_HOME/emulator/emulator" -avd "$AVD" "$@"
+fi
+
+# Emulator closed. logcat ends by itself once the device is gone; give the formatter a moment
+# to flush its last events before the trap cleans up.
+i=0
+while kill -0 "$SETUP_PID" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 0.5; i=$((i + 1)); done
+if [ -n "$SAVE_FILE" ]; then
+  count=$(grep -cE '\[[a-z]+\]$' "$SAVE_FILE" 2>/dev/null)
+  if [ "${count:-0}" -gt 0 ]; then
+    echo "android-testing: saved $count events to $SAVE_FILE"
+  else
+    rm -f "$SAVE_FILE"  # header only, no events
+    echo "android-testing: no events were captured, nothing saved"
+  fi
+fi

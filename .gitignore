@@ -1,0 +1,5 @@
+.DS_Store
+# Captured events from test sessions
+android-events-*.log
+ios-events-*.log
+__pycache__/
